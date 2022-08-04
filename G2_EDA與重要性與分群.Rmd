@@ -1,0 +1,862 @@
+---
+title: 重要性與分群部分
+author: 
+date: "`r Sys.time()`"
+output:
+  html_document:
+    highlight: pygments
+    theme: flatly
+    css: ../etc/style.css
+---
+<br>
+<hr>
+```{r}
+#rm(list=ls(all=T)); options(digits=5, scipen=10)
+#機器學習(ML)：透過從過往的資料和經驗中學習並找到其運行規則，最後達到人工智慧的方法。
+
+
+pacman::p_load(data.table,stats,tidyverse,magrittr,caret, readr,ranger, caTools, ggplot2, dplyr, vcd,ggrepel,plotly,pheatmap,cluster,factoextra,e1071,ggpubr)
+options(scipen=999)       # 數字不要以科學記號呈現
+
+library(xgboost)
+library(ModelMetrics)
+library(ROSE)
+library(randomForest)
+library(lubridate)
+library(reticulate)
+library(scales)
+library(purrr)
+
+```
+
+# 1.1 讀進資料
+```{r}
+#載入資料
+file1 = fread('file1.csv',header = T, stringsAsFactors = F, data.table = F) #原始檔案
+file2 = fread('ori_file2.csv',header = T, stringsAsFactors = F, data.table = F,drop = c(79,80))
+file3 = fread('file3.csv',header = T, stringsAsFactors = F, data.table = F) # zip -> city
+
+
+whole_data = fread('whole_data.csv',header = T, stringsAsFactors = F, data.table = F,drop = c(1,2)) 
+
+subset(file2,select = c(-aum01,-aum04)) -> reset_file2
+subset(whole_data,select = c(srno,yyyymm,aum02_inc,aum03_inc,aum05_inc,aum06_inc,aum07_inc,aum08_inc,aum09_inc,aum10_inc,aum11_inc,aum12_inc,aum13_inc)) -> file_inc
+
+merge(reset_file2,file_inc,by=c("srno","yyyymm")) ->temp
+data_inc = merge(file3,temp,by="srno")
+
+entire_data = fread('entire_data.csv',header = T, stringsAsFactors = F, data.table = F)
+## 整理entire_data 
+
+#entire_data <- filter(entire_data, entire_data$yyyymm != 202012)
+subset(entire_data,select = c('srno','yyyymm','city','Branch_Dist','ratio','google','CNT','change%')) -> entire_data
+colnames(entire_data)[3] <- c("city_major")
+colnames(entire_data)[4] <- c("Branch_Dist_2")
+
+entire_data -> reset_entire_data
+
+merge(data_inc,entire_data,by = c('srno','yyyymm')) -> data0518
+
+#write.csv(data0518,file="C:\\Users\\Chen\\Documents\\R2021\\project\\data0518_2.csv",row.names = FALSE)
+
+```
+
+
+### 前導_eda
+```{r}
+
+# `%out%` <- function(a,b) ! a %in% b
+# file_buy  %>% filter(city %out% c('NA')) 
+
+file_buy  %>% 
+      select(factor = age, buy) %>%
+      group_by(factor, buy) %>%
+      summarise(count = n()) %>%
+      group_by(factor) %>%
+      mutate(ratio = count/sum(count)) %>%  filter(buy %in%  1) -> a
+
+      ggplot(aes(x = factor, y = ratio, fill = factor)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      labs(x = "", y = "ratio", fill = "buy", title = factorNames) +
+      theme(axis.text = element_text(size = 14,face="bold"))+
+      coord_flip()+
+      ggsave(filename = paste0(factorNames,"_EDA.png"), width = 9, height = 6)
+      
+## 購買次數
+ a %>%
+  ggplot(aes(x=factor,y=count)) +
+  geom_point(aes(col=ratio, size=ratio), alpha=0.7) +
+  geom_text(aes(label= factor)) +
+  scale_size(range=c(5,25)) +  scale_colour_gradient(low="#FFCCCC",high="red") +
+  #scale_x_log10() + 
+  theme_bw() +
+  theme(axis.text = element_text(size = 14,face="bold"))+
+  ggtitle("年齡區隔特徵 (泡泡大小:購買基金比率(對該組))")  +
+  ylab("申購次數") + xlab("年齡") 
+  ggsave(filename = "age_point.png", width = 9, height = 6)
+  
+## 購買比率      
+a %>%
+  ggplot(aes(x=factor,y=ratio)) +
+  geom_point(aes(col= factor, size=count), alpha=0.7) +
+  geom_text(aes(label= factor)) +
+  scale_size(range=c(5,25)) +  scale_colour_gradient(low="#FFCCCC",high="red") +
+  #scale_x_log10() + 
+  theme_bw() +
+  theme(axis.text = element_text(size = 14,face="bold"))+
+  ggtitle("年齡區隔特徵 (泡泡大小:購買基金比率(對該組))")  +
+  ylab("申購次數") + xlab("年齡") 
+  ggsave(filename = "age_point.png", width = 9, height = 6)
+ 
+  a %>%
+      ggplot(aes(x = factor, y=count, fill = factor)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      labs(x = "", y = "ratio", fill = "buy") +
+      theme(axis.text = element_text(size = 14,face="bold"))
+      ggsave(filename = "age_count.png", width = 9, height = 6)
+
+```
+
+### 前導_eda_city
+```{r}
+  
+    file_buy  %>% 
+      select(factor = city, buy) %>%
+      group_by(factor, buy) %>%
+      summarise(count = n()) %>%
+      group_by(factor) %>%
+      mutate(ratio = count/sum(count)) %>%  filter(buy %in%  1) -> a
+a %>% 
+      ggplot(aes(x = reorder(factor,ratio), y = ratio, fill = factor)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      #labs(x = "", y = "ratio", fill = "buy", title = city) +
+      theme(axis.text = element_text(size = 12,face="bold"))+
+      geom_hline(yintercept= mean(a$ratio),linetype=2,col="black")+
+      theme(axis.text = element_text(size = 14,face="bold"))+
+      coord_flip()+
+      ggsave(filename = "city_1.png", width = 9, height = 6)
+    
+
+  file_buy  %>% 
+      select(factor = city,income, buy) %>%
+      group_by(factor, buy) %>%
+      summarise(count = n(),mean_income = mean(income)) %>%
+      group_by(factor) %>%
+      mutate(ratio = count/sum(count)) %>%  filter(buy %in% 1) %>% 
+
+  ggplot(aes(x=mean_income,y=ratio ,col=factor, size=ratio,label = factor, alpha=0.7)) +
+  geom_point()  +
+  #scale_size(range=c(5,15)) + 
+  #theme(axis.text.x = element_text(angle = 90))+
+  geom_text_repel(size=3)+
+  geom_vline(xintercept= 560000,linetype=2,col="black")
+ 
+```
+
+#如果將顧客以年齡分群
+```{r}
+
+file_buy  %>%  filter(age %in% c(20:23))  -> g1 ; g1$g_age = c("20~23")
+file_buy  %>%  filter(age %in% c(24:27))  -> g2 ; g2$g_age = c("24~27")
+file_buy  %>%  filter(age %in% c(28:31))  -> g3 ; g3$g_age = c("28~31")
+file_buy  %>%  filter(age %in% c(32:35))  -> g4 ; g4$g_age = c("32~35")
+
+rbind(g1,g2,g3,g4) -> g
+as.factor(g$g_age) -> g$g_age
+
+g  %>%
+      select(g_age, buy) %>%
+      group_by(g_age, buy) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      group_by(g_age) %>%
+      mutate(ratio = count/sum(count)) %>% filter(buy == "1") -> a
+  a %>% 
+      ggplot(aes(x = g_age, y = ratio, fill = g_age)) +
+      geom_bar(stat = "identity") +
+      geom_text(aes(label = round(ratio, digits = 3)),size=4)+
+      theme(axis.text = element_text(size = 14,face="bold"))+
+      geom_hline(yintercept= mean(a$ratio),linetype=2,col="black")+
+      coord_flip()+
+      labs(x = " ", y = " ",title = " ", fill = "是否購買基金")
+      ggsave(filename = "依年齡分群_該age有購買基金的人數除以該組人數.png", width = 9, height = 6)  
+      
+
+g %>%
+  group_by(g_age, buy) %>%
+  summarise(mean_income = mean(income),
+            count = n(),
+            mean = mean(buy_n) ) %>% group_by(g_age) %>%
+            mutate(ratio = count/sum(count)) %>% filter(buy %in% 1) -> a
+
+a %>%
+  ggplot(aes(x=mean_income,y=mean)) +
+  geom_point(aes(col=g_age, size=ratio), alpha=0.7) +
+  geom_text(aes(label=" ")) +
+  scale_size(range=c(10,30)) + 
+  #scale_x_log10() + 
+  theme_bw() +
+  theme(axis.text = element_text(size = 14,face="bold"))
+  #ggtitle("年齡區隔特徵 (泡泡大小:購買基金比率(對該組))")
+  #ylab("平均重複購買次數") + xlab("平均客戶收入") 
+  #gsave(filename ="年齡區隔特徵(泡泡大小_購買基金比率(對該組)).png", width = 9, height = 6)
+
+
+file_buy   %>%
+      select(g_age, buy) %>%
+      group_by(g_age, buy) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      group_by(g_age) %>%
+      mutate(ratio = count/sum(count)) %>% filter(buy == "1") -> a
+  a %>% 
+      ggplot(aes(x = g_age, y = ratio, fill = g_age)) +
+      geom_bar(stat = "identity") +
+      geom_text(aes(label = round(ratio, digits = 3)),size=4)+
+      theme(axis.text = element_text(size = 14,face="bold"))+
+      geom_hline(yintercept= mean(a$ratio),linetype=2,col="black")+
+      coord_flip()+
+      labs(x = " ", y = " ",title = " ", fill = "是否購買基金")
+
+file_buy %>%
+      select(factor = g_age, income,buy) %>%
+      group_by(factor, buy) %>%
+      summarise(mean_income = mean(income)) %>%
+      ggplot(aes(x=factor,y=mean_income,fill=buy)) +
+      geom_bar(position = "dodge",stat="identity",width = .6)+
+      coord_flip()+
+      theme(axis.text = element_text(size = 12,face="bold"))
+      ggsave(filename = "各age_平均客戶收入.png", width = 9, height = 6)
+```
+
+#如果將顧客以城市分群
+```{r}
+file_buy %>% filter(income >= 560000 & age %in%  c(24:35)) -> file_buy
+
+file_buy %>% filter(city %in% c("台北市","新北市","花蓮縣","新竹市","臺中市","高雄市","臺南市","嘉義縣","彰化縣","基隆市")) -> c1
+c1$g_city <- c("1")
+
+file_buy %>% filter(city %in% c("苗栗縣","桃園市","宜蘭縣","嘉義市","屏東縣","新竹縣","雲林縣","澎湖縣","金門縣","連江縣","NA","臺東縣","南投縣")) -> c2
+c2$g_city <- c("2")
+
+rbind(c1,c2) -> c
+
+c %>%
+      select(g_city, buy) %>%
+      group_by(g_city, buy) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      group_by(g_city) %>%
+      mutate(ratio = count/sum(count)) %>% filter(buy == "1") -> a
+  a %>% 
+      ggplot(aes(x = g_city, y = ratio, fill = g_city)) +
+      geom_bar(stat = "identity") +
+      theme(axis.text = element_text(size = 14,face="bold"))+
+      geom_hline(yintercept= mean(a$ratio),linetype=2,col="black")+
+      coord_flip()
+```
+
+# 其餘特徵_思考
+```{r}
+
+`%out%` <- function(a,b) ! a %in% b
+
+g %>% filter(city %out% c('NA')) %>%
+      group_by(Branch_Dist,g_age,buy) %>%
+  summarise(count = n()) %>% group_by(Branch_Dist,g_age) %>%
+            mutate(ratio = count/sum(count)) %>% filter(buy %in%  1) %>% 
+  ggplot(aes(x= Branch_Dist,y= ratio ,fill= g_age,label = "")) +
+  geom_bar(position = "dodge",stat = "identity") + 
+  geom_text_repel(size=3)+
+  labs(title = " ") 
+
+#======= 
+  
+g %>% filter(Branch_Dist %in% c("<0.5公里","0.5-1公里","1-1.5公里","1.5-2公里")) -> t1
+t1$Branch_Dist <- c("近")
+g %>% filter(Branch_Dist %in% c("2-2.5公里","2.5-3公里")) -> t2
+t2$Branch_Dist <- c("中")
+g %>% filter(Branch_Dist %in% c("3-5公里","5公里以上")) -> t3
+t3$Branch_Dist <- c("遠")
+rbind(t1,t2,t3) -> Branch
+
+Branch %>% filter(city %out% c('NA')) %>%
+      group_by(Branch_Dist,city,buy) %>%
+  summarise(count = n()) %>% group_by(Branch_Dist,city) %>%
+            mutate(ratio = count/sum(count))  %>% filter(buy %in%  1) -> a
+
+a %>%  filter(ratio > mean(a$ratio)) %>% 
+  ggplot(aes(x= Branch_Dist,y= ratio ,fill= city,label = "")) +
+  geom_bar(position = "dodge",stat = "identity") + 
+  geom_text_repel(size=3)+
+  labs(title = " ") 
+  ggsave(filename = "年齡分群_分行.png", width = 9, height = 6)
+
+`%out%` <- function(a,b) ! a %in% b
+
+Branch %>% filter(city %out% c('NA')) %>%
+      group_by(Branch_Dist,g_age,buy) %>%
+  summarise(count = n()) %>% group_by(Branch_Dist,g_age) %>%
+            mutate(ratio = count/sum(count)) %>% filter(buy %in%  1) %>% 
+  ggplot(aes(x= Branch_Dist,y= ratio ,fill= g_age,label = "")) +
+  geom_bar(position = "dodge",stat = "identity") + 
+  geom_text_repel(size=3)+
+  labs(title = " ") 
+  ggsave(filename = "年齡分群_分行.png", width = 9, height = 6)
+  
+  
+#======= 
+  
+g  %>%
+      select(city, buy) %>%
+      group_by(city, buy) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      group_by(city) %>%
+      mutate(ratio = count/sum(count)) %>% filter(buy %in% 1) -> a
+  
+a %>% filter(ratio > mean(a$ratio)) %>%
+      ggplot(aes(x = reorder(city, ratio), y = ratio, fill = city)) +
+      geom_bar(stat = "identity") +
+      #theme(axis.text.x = element_text(angle = 90))+
+      #geom_hline(yintercept= mean(a$ratio),linetype=1,col="black")+
+      coord_flip()+
+      labs(x = "年齡", y = "比率",title = "縮小樣本後_city", fill = "是否購買基金")
+      #ggsave(filename = "縮小樣本後_city.png", width = 9, height = 6)
+
+```
+
+```{r}
+file_buy %>% filter(Branch_Dist %in% c("<0.5公里")) -> t1
+file_buy %>% filter(Branch_Dist %in% c("0.5-1公里")) -> t2
+file_buy %>% filter(Branch_Dist %in% c("1-1.5公里")) -> t3
+file_buy %>% filter(Branch_Dist %in% c("1.5-2公里")) -> t4
+file_buy %>% filter(Branch_Dist %in% c("2-2.5公里")) -> t5
+file_buy %>% filter(Branch_Dist %in% c("2.5-3公里")) -> t6
+file_buy %>% filter(Branch_Dist %in% c("3-5公里")) -> t7
+file_buy %>% filter(Branch_Dist %in% c("5公里以上")) -> t8
+
+t1$B_Dist <- c(1)
+t2$B_Dist <- c(2)
+t3$B_Dist <- c(3)
+t4$B_Dist <- c(4)
+t5$B_Dist <- c(5)
+t6$B_Dist <- c(6)
+t7$B_Dist <- c(7)
+t8$B_Dist <- c(8)
+
+rbind(t1,t2,t3,t4,t5,t6,t7,t8) -> file_buy
+
+file_buy %>% 
+      group_by(g_age,buy) %>%
+  summarise(count = n(),mean_bd = mean(B_Dist)) %>% group_by(g_age) %>%
+            mutate(ratio = count/sum(count))  %>% filter(buy %in%  1) -> a
+
+a %>% 
+  ggplot(aes(x= g_age,y= mean_bd  ,fill=g_age,label = "")) +
+  geom_bar(position = "dodge",stat = "identity") + 
+  geom_text_repel(size=3)+
+  labs(title = " ") 
+  ggsave(filename = "年齡分群_分行.png", width = 9, height = 6)
+
+
+file_buy %>% filter(city %out% c('NA')) %>%
+      group_by(city,buy) %>%
+  summarise(count = n(),mean_bd = mean(B_Dist)) %>% group_by(city) %>%
+            mutate(ratio = count/sum(count))  %>% filter(buy %in%  1) -> a
+
+a %>% 
+  ggplot(aes(x= Branch_Dist,y= ratio ,fill= city,label = "")) +
+  geom_bar(position = "dodge",stat = "identity") + 
+  geom_text_repel(size=3)+
+  labs(title = " ") 
+  #ggsave(filename = "年齡分群_分行.png", width = 9, height = 6)
+
+`%out%` <- function(a,b) ! a %in% b
+
+Branch %>% filter(city %out% c('NA')) %>%
+      group_by(Branch_Dist,g_age,buy) %>%
+  summarise(count = n()) %>% group_by(Branch_Dist,g_age) %>%
+            mutate(ratio = count/sum(count)) %>% filter(buy %in%  1) %>% 
+  ggplot(aes(x= Branch_Dist,y= ratio ,fill= g_age,label = "")) +
+  geom_bar(position = "dodge",stat = "identity") + 
+  geom_text_repel(size=3)+
+  labs(title = " ") 
+  #ggsave(filename = "年齡分群_分行.png", width = 9, height = 6)
+  
+```
+
+# 期末START
+### 變數增加
+```{r}
+# 如果有加總的話 與 金錢除以數字
+
+data0518$price_01 = data0518$pmt_a01/data0518$pmt_c01
+data0518$price_02 = data0518$pmt_a02/data0518$pmt_c02
+data0518$price_03 = data0518$pmt_a03/data0518$pmt_c03
+data0518$price_04 = data0518$pmt_a04/data0518$pmt_c04
+data0518$price_05 = data0518$pmt_a05/data0518$pmt_c05
+data0518$price_06 = data0518$pmt_a06/data0518$pmt_c06
+data0518$price_07 = data0518$pmt_a07/data0518$pmt_c07
+data0518$price_08 = data0518$pmt_a08/data0518$pmt_c08
+data0518$price_09 = data0518$pmt_a09/data0518$pmt_c09
+
+data0518$price_10 = data0518$pmt_a10/data0518$pmt_c10
+data0518$price_11 = data0518$pmt_a11/data0518$pmt_c11
+data0518$price_12 = data0518$pmt_a12/data0518$pmt_c12
+data0518$price_13 = data0518$pmt_a13/data0518$pmt_c13
+data0518$price_14 = data0518$pmt_a14/data0518$pmt_c14
+data0518$price_15 = data0518$pmt_a15/data0518$pmt_c15
+data0518$price_16 = data0518$pmt_a16/data0518$pmt_c16
+data0518$price_17 = data0518$pmt_a17/data0518$pmt_c17
+data0518$price_18 = data0518$pmt_a18/data0518$pmt_c18
+data0518$price_19 = data0518$pmt_a19/data0518$pmt_c19
+
+data0518[data0518 == 'NaN'] <- 0
+
+data0518$aum_all = rowSums(data0518[13:23])
+data0518$bill_all = rowSums(data0518[24:29])
+data0518$pmt_a_all = rowSums(data0518[30:48])
+data0518$pmt_c_all = rowSums(data0518[49:67])
+data0518$aum_inc_all = rowSums(data0518[87:97])
+data0518$price_all = rowSums(data0518[104:122])
+
+
+#data0518 = fread('data0518.csv',header = T, stringsAsFactors = F, data.table = F) 
+data0519 = fread('data0519.csv',header = T, stringsAsFactors = F, data.table = F)
+
+factor_name = c("srno","age","gender","edu","mry", "job", "occp","Branch_Dist","flg_house", "city",  "yyyymm", "FLG_WEB", "YN_Web_Active","YN_SEC_ACC","YN_SAL","rs_prod_01")
+
+factor_temp = as.data.frame(lapply(data0519[,factor_name], as.factor))
+num_temp = as.data.frame(lapply(data0519[,!(colnames(data0519) %in% factor_name)], as.numeric))
+data0519 = cbind(factor_temp,num_temp)
+
+filter(data0519, data0519$yyyymm != 202011) -> data
+
+```
+
+# 整理
+```{r}
+
+subset(data0518,select = c(-price_01,-price_02,-price_03,-price_04,-price_05,-price_06,-price_07,-price_08,-price_09,-price_10,-price_11,-price_12,-price_13,-price_14,-price_15,-price_16,-price_17,-price_18,-price_19)) -> data0519
+
+#write.csv(data0519,file="C:\\Users\\Chen\\Documents\\R2021\\project\\data0519.csv",row.names = FALSE)
+
+data0519 -> data
+
+## 整理 因為201912inc為空值
+test <- filter(data0519, data0519$yyyymm != 201912)
+test <- filter(test, test$yyyymm != 202011)
+```
+
+# 如果不要那些瑣碎的
+```{r}
+ranger(rs_prod_01 ~ .,data = subset(test,select = c(-srno,-yyyymm)),importance = "impurity",num.tree = 50) -> imp_50
+
+sort(imp_50$variable.importance)
+imp_50$variable.importance %>% as.data.frame() -> temp
+rownames(temp) %>% as.data.frame()-> temp2
+cbind(temp2,temp$.) -> imp_50_data
+colnames(imp_50_data)<- c("var","imp")
+
+imp_50_data %>% filter(imp_50_data$imp > 100) -> temp
+
+arrange(temp, desc(imp)) %>% 
+  ggplot(aes(x = reorder(var, imp), y = imp, fill = var)) +
+  geom_bar(stat = "identity") +
+  coord_flip()+
+  labs(x = "var", y = "imp", title = "重要變數", fill = "var") +
+  theme(axis.text.x = element_text(angle = 90))
+  ggsave(filename = "imp_大於100的.png", width = 9, height = 6)
+
+# 總共100個 if取前30個
+imp_50_data %>% filter(imp_50_data$imp > 81) -> temp
+
+arrange(temp, desc(imp)) %>% 
+  ggplot(aes(x = reorder(var, imp), y = imp, fill = var)) +
+  geom_bar(stat = "identity") +
+  coord_flip()+
+  labs(x = "var", y = "imp", title = "重要變數", fill = "var") +
+  theme(axis.text.x = element_text(angle = 90))
+  ggsave(filename = "imp_取前30個.png", width = 9, height = 6)
+
+# 總共100個  if取前25個
+imp_50_data %>% filter(imp_50_data$imp > 89.4) -> temp
+
+arrange(temp, desc(imp)) %>% 
+  ggplot(aes(x = reorder(var, imp), y = imp, fill = var)) +
+  geom_bar(stat = "identity") +
+  coord_flip()+
+  labs(x = "var", y = "imp", title = "重要變數", fill = "var") +
+  theme(axis.text.x = element_text(angle = 90))
+  ggsave(filename = "imp_取前25個.png", width = 9, height = 6)
+ 
+# 總共100個  if取前20個
+imp_50_data %>% filter(imp_50_data$imp > 96) -> temp
+
+arrange(temp, desc(imp)) %>% 
+  ggplot(aes(x = reorder(var, imp), y = imp, fill = var)) +
+  geom_bar(stat = "identity") +
+  coord_flip()+
+  labs(x = "var", y = "imp", title = "重要變數", fill = "var") +
+  theme(axis.text.x = element_text(angle = 90))
+  ggsave(filename = "imp_取前20個.png", width = 9, height = 6)
+
+
+# 總共100個  if取前20個
+imp_50_data %>% filter(imp_50_data$imp > 70) -> temp
+
+arrange(temp, desc(imp)) %>% 
+  ggplot(aes(x = reorder(var, imp), y = imp, fill = var)) +
+  geom_bar(stat = "identity") +
+  coord_flip()+
+  labs(x = "var", y = "imp", title = "重要變數", fill = "var") +
+  theme(axis.text.x = element_text(angle = 90))
+  ggsave(filename = "讓外部特徵上榜.png", width = 9, height = 6)
+
+```
+
+### 把該轉的轉
+```{r}
+#data_inc$yyyymm = as.Date(paste0(as.character(data_inc$yyyymm), '01'), format='%Y%m%d')
+
+# 將類別變數轉為factor，連續型變數轉為numeric
+factor_name = c("srno","age","gender","edu","mry", "job", "occp","Branch_Dist","flg_house", "city",  "yyyymm", "FLG_WEB", "YN_Web_Active","YN_SEC_ACC","YN_SAL","rs_prod_01")
+
+factor_temp = as.data.frame(lapply(data0518[,factor_name], as.factor))
+num_temp = as.data.frame(lapply(data0518[,!(colnames(data0518) %in% factor_name)], as.numeric))
+data0518 = cbind(factor_temp,num_temp)
+
+#data_inc[is.na(data_inc)] <- 0
+ 
+ #`%out%` <- function(a,b) ! a %in% b
+ # data %>% 
+ #   filter(yyyymm %out% c("2020-11-01")) -> data_inc
+
+file_buy = fread('file_buy.csv',header = T, stringsAsFactors = F, data.table = F)
+
+# 將類別變數轉為factor，連續型變數轉為numeric
+factor_name = c("srno","age","gender","edu","mry","job","occp","Branch_Dist","city","flg_house","buy")
+
+factor_temp = as.data.frame(lapply(file_buy[,factor_name], as.factor))
+num_temp = as.data.frame(lapply(file_buy[,!(colnames(file_buy) %in% factor_name)], as.numeric))
+file_buy = cbind(factor_temp,num_temp) #buy_n,buy
+
+```
+
+
+### 縮小樣本_220萬筆
+```{r}
+data %>% group_by(rs_prod_01) %>%  summarise(count = n()) %>%   mutate(sum = sum(count)) %>% group_by(rs_prod_01) %>% mutate(ratio = count/sum) 
+#3503/2196497		0.001592273/0.998407727	
+
+## 約31k
+data  %>% filter(age %in%  c(23:35) & income > 370000 ) %>% group_by(rs_prod_01) %>%  summarise(count = n()) %>%   mutate(sum = sum(count)) %>% group_by(rs_prod_01) %>% mutate(ratio = count/sum)
+# 2885/1627150			0.001769901/0.998230099
+
+## 思考
+quantile(data$income)
+#       0%       25%       50%       75%      100% 
+# 104720.0  374550.8  471239.0  618128.0 5235988.0 
+
+data %>% filter(rs_prod_01 != 1) -> temp #沒買
+quantile(temp$income)
+#     0%     25%     50%     75%    100% 
+# 104720  374428  471239  617914 5235988
+
+data %>% filter(rs_prod_01 != 0) -> temp #有買
+quantile(temp$income)
+
+ #    0%     25%     50%     75%    100% 
+ #137183  410502  523599  688009 5235988
+
+```
+
+### 縮小樣本_20萬筆   
+```{r}
+
+file_buy %>% group_by(buy) %>%  summarise(count = n()) %>%  mutate(sum = sum(count)) %>% group_by(buy) %>% mutate(ratio = count/sum) #1972/198028
+
+## 約31k
+file_buy  %>% filter(age %in%  c(23:35) & income > 370000 ) %>% group_by(buy) %>%  summarise(count = n()) %>%  mutate(sum = sum(count)) %>% group_by(buy) %>% mutate(ratio = count/sum) #1588/146597 0.01071633/0.98928367
+
+file_buy  %>% filter(age %in%  c(20:21) | income < 370000 ) %>% group_by(buy) %>%  summarise(count = n()) %>%   mutate(sum = sum(count)) %>% group_by(buy) %>% mutate(ratio = count/sum)
+
+```
+
+### 縮小樣本_220萬筆的值取平均
+```{r}
+
+data  %>% filter(age %in%  c(23:35) & income > 370000 ) -> c_data
+
+subset(c_data,select = c(srno,yyyymm,income,aum_all,bill_all,pmt_a_all,price_all,dep_a3,dep_a4,CNT_Web_Login,FLG_INV_ADV)) -> try
+
+c_data %>% filter(c_data$yyyymm != 201912) -> try2
+subset(try2,select = c(srno,aum_inc_all)) -> try2
+
+try %>% group_by(srno) %>% 
+  summarise(income = round(mean(income), digits = 2),
+            aum_all = round(mean(aum_all), digits = 2),
+            bill_all = round(mean(bill_all), digits = 2),
+            pmt_a_all = round(mean(pmt_a_all), digits = 2),
+            price_all = round(mean(price_all), digits = 2),
+            dep_a3 = round(mean(dep_a3), digits = 2),
+            dep_a4 = round(mean(dep_a4), digits = 2),
+            CNT_Web_Login = round(mean(CNT_Web_Login), digits = 2),
+            FLG_INV_ADV = round(mean(FLG_INV_ADV), digits = 2)
+            ) -> try
+try2 %>% group_by(srno) %>% 
+  summarise(aum_inc_all = round(mean(aum_inc_all), digits = 2)
+            ) -> try2
+
+merge(try,try2,by=c('srno')) -> s_data
+
+set.seed(111)
+s_data$grp = kmeans(scale(s_data[,2:11]),3)$cluster
+table(s_data$grp)  # 族群大小
+
+```
+
+# 分群_check_here
+```{r}
+
+# k value與準確度視覺化
+df <- data.frame(
+       kv = klist, KMratio = ratios)
+
+ggplot(df, aes(x = kv, y = KMratio, label = kv, color = KMratio)) +
+geom_point(size = 5) + geom_text(vjust = 2)
+
+```
+
+# 融合各群的檔案
+```{r}
+
+group_by(s_data, grp) %>% summarise(income = round(mean(income), digits = 2),
+            aum_all = round(mean(aum_all), digits = 2),
+            bill_all = round(mean(bill_all), digits = 2),
+            pmt_a_all = round(mean(pmt_a_all), digits = 2),
+            price_all = round(mean(price_all), digits = 2),
+            dep_a3 = round(mean(dep_a3), digits = 2),
+            dep_a4 = round(mean(dep_a4), digits = 2),
+            CNT_Web_Login = round(mean(CNT_Web_Login), digits = 2),
+            FLG_INV_ADV = round(mean(FLG_INV_ADV), digits = 2),
+            aum_inc_all = round(mean(aum_inc_all), digits = 2),
+            size=n()) -> temp
+temp
+
+temp %>%
+  gather("event", "n", -1) %>% 
+  ggplot(aes(x=event, y=n, fill = event)) +
+  #geom_text(aes(label = n,angle = 90),vjust = -.6,check_overlap = TRUE,size=3) +
+  geom_bar(stat="identity") +
+  scale_y_log10() + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  facet_wrap(~grp,nrow=1)
+
+
+subset(s_data,select = c(srno,grp)) -> s1
+merge(file_buy,s1,by=c('srno')) -> s
+s %>% filter(grp == 1 ) -> grp1
+s %>% filter(grp == 2 ) -> grp2
+s %>% filter(grp == 3 ) -> grp3
+
+subset(grp1,select = c(srno,grp)) -> g1
+subset(grp2,select = c(srno,grp)) -> g2
+subset(grp3,select = c(srno,grp)) -> g3
+
+merge(data,g1,by=c('srno')) -> l260_grp1
+merge(data,g2,by=c('srno')) -> l260_grp2
+merge(data,g3,by=c('srno')) -> l260_grp3
+
+# 匯出檔案
+l260_grp1 %>% select(-grp)-> l260_grp1
+l260_grp2 %>% select(-grp)-> l260_grp2
+l260_grp3 %>% select(-grp)-> l260_grp3
+
+ # write.csv(l260_grp1,file="C:\\Users\\Chen\\Documents\\R2021\\project\\l260_grp1.csv",row.names = FALSE)
+ # write.csv(l260_grp2,file="C:\\Users\\Chen\\Documents\\R2021\\project\\l260_grp2.csv",row.names = FALSE)
+ # write.csv(l260_grp3,file="C:\\Users\\Chen\\Documents\\R2021\\project\\l260_grp3.csv",row.names = FALSE)
+
+
+#如果分3群
+l_grp1  %>% group_by(rs_prod_01) %>%  summarise(count = n()) %>%   mutate(sum = sum(count)) %>% group_by(rs_prod_01) %>% mutate(ratio = count/sum) #1928/1714853	0.001123032/0.998876968	
+l_grp2  %>% group_by(rs_prod_01) %>%  summarise(count = n()) %>%   mutate(sum = sum(count)) %>% group_by(rs_prod_01) %>% mutate(ratio = count/sum) #1036/404556   0.002554291/0.997445709	
+l_grp3  %>% group_by(rs_prod_01) %>%  summarise(count = n()) %>%   mutate(sum = sum(count)) %>% group_by(rs_prod_01) %>% mutate(ratio = count/sum) #539/77088     0.00694346/0.99305654	
+
+
+```
+
+## 查看各群內容
+```{r}
+s_data %>% select(-income) -> temp
+temp %>% select(-grp) -> temp
+
+merge(s,temp,by = 'srno') -> a
+
+as.numeric(a$age) -> a$age
+a$age <- as.numeric(as.character(a$age))
+as.factor(a$grp) -> a$grp
+
+s  %>% 
+      select(factor = grp, buy,age,income) %>%
+      group_by(factor, buy) %>%
+      summarise(count = n(),
+                age = mean(age),
+                income = mean(income)) %>%
+      group_by(factor) %>%
+      mutate(ratio = count/sum(count)) -> a
+
+      ggplot(aes(x = factor, y = ratio, fill = factor)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      labs(x = "", y = "ratio", fill = "buy", title = factorNames) +
+      theme(axis.text = element_text(size = 14,face="bold"))+
+      coord_flip()+
+      ggsave(filename = paste0(factorNames,"_EDA.png"), width = 9, height = 6)
+
+ a %>%
+  ggplot(aes(x=factor,y=count)) +
+  geom_point(aes(col=ratio, size=ratio), alpha=0.7) +
+  geom_text(aes(label= factor)) +
+  scale_size(range=c(5,25)) +  scale_colour_gradient(low="#FFCCCC",high="red") +
+  #scale_x_log10() + 
+  theme_bw() +
+  theme(axis.text = element_text(size = 14,face="bold"))+
+  ggtitle("年齡區隔特徵 (泡泡大小:購買基金比率(對該組))")  +
+  ylab("申購次數") + xlab("年齡") 
+  ggsave(filename = "age_point.png", width = 9, height = 6)
+  
+  
+s  %>% 
+      select(factor = grp, buy,age) %>%
+      group_by(factor, buy,age) %>%
+      summarise(count = n()) %>%
+      group_by(factor) %>%
+      mutate(ratio = count/sum(count)) -> a
+
+grp1  %>% 
+      select(buy,age) %>%
+      group_by(buy,age) %>%
+      summarise(count = n()) %>%
+      group_by(buy) %>%
+      mutate(ratio = count/sum(count)) -> a
+
+grp1 %>% filter(buy == 1)
+
+grp1  %>% 
+      select(age) %>%
+      group_by(age) %>%
+      summarise(count = n()) %>%
+      
+      ggplot(aes(x = age, y=count, fill = age)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      labs(x = "", y = "ratio", fill = "buy") +
+      theme(axis.text = element_text(size = 14,face="bold"))
+      #ggsave(filename = "age_count.png", width = 9, height = 6)
+
+grp2  %>% 
+      select(age) %>%
+      group_by(age) %>%
+      summarise(count = n())%>%
+      
+      ggplot(aes(x = age, y=count, fill = age)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      labs(x = "", y = "ratio", fill = "buy") +
+      theme(axis.text = element_text(size = 14,face="bold"))
+
+grp3 %>% 
+      select(age) %>%
+      group_by(age) %>%
+      summarise(count = n())%>%
+      ggplot(aes(x = age, y=count, fill = age)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      labs(x = "", y = "ratio", fill = "buy") +
+      theme(axis.text = element_text(size = 14,face="bold"))
+
+
+s %>% 
+      select(grp,age) %>%
+      group_by(grp,age) %>%
+      summarise(count = n()) %>%
+      ggplot(aes(x = age, y=count, fill = age)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      labs(x = "", y = "ratio", fill = "buy") +
+      theme(axis.text = element_text(size = 14,face="bold"))+
+      facet_wrap(~grp)
+
+s$age <- as.numeric(as.character(s$age))
+as.factor(s$age) -> s$age
+
+as.factor(s$grp) -> s$grp
+
+s %>% 
+      select(grp,age) %>%
+      group_by(grp,age) %>%
+      summarise(count = n()) %>%
+      group_by(grp) %>%
+      mutate(ratio = count/sum(count)) %>%
+  
+  
+      ggplot(aes(x = age, y=ratio, fill = age)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      #labs(x = "", y = "ratio", fill = "buy") +
+      theme(axis.text = element_text(size = 12,face="bold"))+
+      facet_wrap(~grp)
+
+s %>% 
+      select(grp,age) %>%
+      group_by(grp,age) %>%
+      summarise(count = n()) %>%
+      group_by(grp) %>%
+      mutate(ratio = count/sum(count)) %>%
+  
+  
+      ggplot(aes(x = age, y=ratio, fill = age)) +
+      geom_bar(position = "dodge",stat = "identity") +
+      #labs(x = "", y = "ratio", fill = "buy") +
+      theme(axis.text = element_text(size = 12,face="bold"))+
+      facet_wrap(~grp)
+
+
+
+l_grp1  %>%
+      select(rs_prod_01) %>%
+      group_by(rs_prod_01) %>%
+      summarise(count = n(), .groups = 'drop') %>%
+      mutate(ratio = count/sum(count)) -> a
+a %>%
+      ggplot(aes(x=" ",y=ratio ,fill=rs_prod_01)) +
+      geom_bar(stat = "identity")+ 
+      scale_fill_brewer(palette = "Reds") +
+      coord_polar(theta = "y", start=0)+ theme_void()
+
+a  %>% 
+      select(grp, buy,age,income,price_all,aum_all) %>%
+      group_by(grp, buy) %>%
+      summarise(count = n(),
+                age = mean(age),
+                income = mean(income),
+                price_all = mean(price_all),
+                aum_all = mean(aum_all),
+                size = n()) %>%
+      group_by(grp) %>%
+      mutate(ratio = count/sum(count))
+
+a  %>% 
+      select(grp,age,income,price_all,aum_all) %>%
+      group_by(grp) %>%
+      summarise(count = n(),
+                age = mean(age),
+                income = mean(income),
+                price_all = mean(price_all),
+                aum_all = mean(aum_all)
+                ) %>%
+      group_by(grp) %>%
+      mutate(ratio = count/sum(count)) %>% 
+
+  ggplot(aes(x=income,y=aum_all)) +
+  geom_point(aes(col=grp, size=count), alpha=0.7) +
+  geom_text(aes(label=" ")) +
+  scale_size(range=c(5,20)) + 
+  #scale_x_log10() + 
+  theme_bw()+
+  theme(axis.text = element_text(size = 10,face="bold"))
+
+```
+
