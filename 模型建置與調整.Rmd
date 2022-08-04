@@ -1,0 +1,1615 @@
+---
+title:  
+author: 
+date: "`r Sys.time()`"
+output:
+  html_document:
+    highlight: pygments
+    theme: flatly
+    css: ../etc/style.css
+---
+<br>
+
+<hr>
+
+```{r}
+#rm(list=ls(all=T)); options(digits=5, scipen=10)
+#機器學習(ML)：透過從過往的資料和經驗中學習並找到其運行規則，最後達到人工智慧的方法。
+
+# 載入套件
+#library(data.table)       # 讀檔套件
+#library(tidyverse)        # 整理資料套件
+#library(ggplot2)          # 繪圖套件
+#library(e1071)            # 計算偏、峰態套件
+#library(ggpubr)           # 用來編排圖片的套件
+pacman::p_load(data.table,stats,tidyverse,magrittr,caret, readr,ranger, caTools, ggplot2, dplyr, vcd,ggrepel,plotly,pheatmap)
+options(scipen=999)       # 數字不要以科學記號呈現
+
+library(e1071)            # 計算偏、峰態套件
+library(ggplot2)           # 用來編排圖片的套件
+library(xgboost)
+library(ModelMetrics)
+library(ROSE)
+library(randomForest)
+library(tidyverse)
+library(xgboost) 
+library("pROC")
+
+#getwd()
+#setwd("C:/Users/Chen/Documents/R2021/project")
+```
+
+### 把該轉的轉_新的資料
+```{r}
+#data_inc$yyyymm = as.Date(paste0(as.character(data_inc$yyyymm), '01'), format='%Y%m%d')
+
+data0519 = fread('data0519.csv',header = T, stringsAsFactors = F, data.table = F)
+
+# 將類別變數轉為factor，連續型變數轉為numeric
+factor_name = c("income","age","gender","edu","mry", "job", "occp","Branch_Dist", "city", "FLG_WEB","YN_Web_Active","YN_SEC_ACC","YN_SAL","flg_house")
+
+factor_temp = as.data.frame(lapply(data0519[,factor_name], as.factor))
+data0519 = filter(data0519, data0519$age>=23 & data0519$income>=370000)
+data_2 = as.data.frame(lapply(data0519[,!(colnames(data0519) %in% factor_name)], as.numeric))
+
+data_1 = data_2[1:72]
+ 
+```
+
+#---------------  Xgboost 模型 --------------
+# data1
+```{r}
+
+train <- filter(data_1, yyyymm!=202011)
+test <- filter(data_1, yyyymm==202011)
+
+trainData = train
+testData = test
+
+train_yes = filter(trainData, trainData$rs_prod_01==1)
+train_no = filter(trainData, trainData$rs_prod_01==0)
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+train_x = trainData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()               # 訓練集的特徵變數
+train_y = trainData %>% select(rs_prod_01)  %>% as.matrix()              # 訓練集的預測目標
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+
+# 將Train與Test轉為xgboost矩陣格式
+trainData = xgb.DMatrix(data =  train_x, label = train_y)   
+testData = xgb.DMatrix(data =  test_x, label = test_y)       
+
+watchlist = list(train = trainData, validation = testData)
+
+#1. XGBoost 固定參數版
+xgbModel1 = xgb.train(data = trainData, 
+                     booster = "gbtree", 
+                     eta = 0.1, 
+                     max_depth = 8, 
+                     subsample = 0.8,
+                     eval_metric = "error",
+                     watchlist = watchlist,
+                     maximize = F,
+                     nrounds = 100,
+                     verbose = T, 
+                     objective = "binary:logistic")
+for(cutoff in c(1:30)){
+  y_pred = predict(xgbModel1, test_x)
+  for (i in 1:dim(testData)[1]) {
+    if (y_pred[i] > 0.01*cutoff) {
+      y_pred[i] = 1
+    }
+    else{
+      y_pred[i] = 0
+    }
+  }
+  pred = data.frame(
+    srno = test["srno"],
+    y_pred = y_pred
+  )
+  pred_yes = filter(pred, y_pred==1)
+  pred_no = filter(pred, y_pred==0)
+  tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+  tp = tp/dim(testData)[1]
+  fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+  fn = fn/dim(testData)[1]
+  fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+  fp = fp/dim(testData)[1]
+  tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+  tn = tn/dim(testData)[1]
+  acc = tp+tn
+  preci = tp/(tp+fp)
+  reca = tp/(tp+fn)
+  f1 = 2/((1/preci)+(1/reca))
+  cat("f1 = ",f1," cutoff = ", 0.01*cutoff, "\n")
+}
+```
+
+```{r}
+xgbModel1 = xgb.load('xgbModel1.model')
+y_pred = predict(xgbModel1, test_x)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred[i] > 0.06) {
+    y_pred[i] = 1
+  }
+  else{
+    y_pred[i] = 0
+  }
+}
+pred = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred
+)
+pred_yes = filter(pred, y_pred==1)
+pred_no = filter(pred, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+
+#auc
+x_pred = predict(xgbModel1, train_x)
+y_train = data.frame(train_y)
+x_pred = data.frame(x_pred)
+rf_roc = roc(y_train$rs_prod_01, x_pred$x_pred)
+
+# ROC for 3 cutoffs
+plot.roc(rf_roc, print.thres = c(0.8, 0.2, 0.001), print.auc = T, xlim = c(1, 0))
+
+# Optimal threshold/cutoff based on Youden's Index 
+# 這裡在找最佳threshold/cutoff的時候是要用Train的，不是用Validation、Test!!!
+plot.roc(rf_roc, print.thres = "best", 
+         print.thres.best.method = "youden", 
+         print.auc = T,
+         print.thres.col = 'red',
+         legacy.axes=T) # x軸改成FPR
+```
+
+###data2
+
+```{r}
+
+train <- filter(data_2, yyyymm!=202011)
+test <- filter(data_2, yyyymm==202011)
+
+trainData = train
+testData = test
+
+train_yes = filter(trainData, trainData$rs_prod_01==1)
+train_no = filter(trainData, trainData$rs_prod_01==0)
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+train_x = trainData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()               # 訓練集的特徵變數
+train_y = trainData %>% select(rs_prod_01)  %>% as.matrix()              # 訓練集的預測目標
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+
+# 將Train與Test轉為xgboost矩陣格式
+trainData = xgb.DMatrix(data =  train_x, label = train_y)   
+testData = xgb.DMatrix(data =  test_x, label = test_y)       
+
+watchlist = list(train = trainData, validation = testData)
+
+#1. XGBoost 固定參數版
+xgbModel2 = xgb.train(data = trainData, 
+                     booster = "gbtree", 
+                     eta = 0.1, 
+                     max_depth = 8, 
+                     subsample = 0.8,
+                     eval_metric = "error",
+                     watchlist = watchlist,
+                     maximize = F,
+                     nrounds = 100,
+                     verbose = T, 
+                     objective = "binary:logistic")
+for(cutoff in c(1:30)){
+  y_pred = predict(xgbModel2, test_x)
+  for (i in 1:dim(testData)[1]) {
+    if (y_pred[i] > 0.01*cutoff) {
+      y_pred[i] = 1
+    }
+    else{
+      y_pred[i] = 0
+    }
+  }
+  pred = data.frame(
+    srno = test["srno"],
+    y_pred = y_pred
+  )
+  pred_yes = filter(pred, y_pred==1)
+  pred_no = filter(pred, y_pred==0)
+  tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+  tp = tp/dim(testData)[1]
+  fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+  fn = fn/dim(testData)[1]
+  fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+  fp = fp/dim(testData)[1]
+  tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+  tn = tn/dim(testData)[1]
+  acc = tp+tn
+  preci = tp/(tp+fp)
+  reca = tp/(tp+fn)
+  f1 = 2/((1/preci)+(1/reca))
+  cat("f1 = ",f1," cutoff = ", 0.01*cutoff, "\n")
+}
+```
+
+```{r}
+xgbModel2 = xgb.load('xgbModel2.model')
+y_pred = predict(xgbModel2, test_x)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred[i] > 0.1) {
+    y_pred[i] = 1
+  }
+  else{
+    y_pred[i] = 0
+  }
+}
+pred = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred
+)
+pred_yes = filter(pred, y_pred==1)
+pred_no = filter(pred, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+
+#auc
+x_pred = predict(xgbModel2, train_x)
+y_train = data.frame(train_y)
+x_pred = data.frame(x_pred)
+rf_roc = roc(y_train$rs_prod_01, x_pred$x_pred)
+
+# ROC for 3 cutoffs
+plot.roc(rf_roc, print.thres = c(0.8, 0.2, 0.001), print.auc = T, xlim = c(1, 0))
+
+# Optimal threshold/cutoff based on Youden's Index 
+# 這裡在找最佳threshold/cutoff的時候是要用Train的，不是用Validation、Test!!!
+plot.roc(rf_roc, print.thres = "best", 
+         print.thres.best.method = "youden", 
+         print.auc = T,
+         print.thres.col = 'red',
+         legacy.axes=T) # x軸改成FPR
+```
+
+
+
+
+###忙猜
+```{r}
+test <- filter(data_1, yyyymm==202011)
+test_yes = filter(test, rs_prod_01==1)
+test_no = filter(test, test$rs_prod_01==0)
+pred1 <- filter(data_1, yyyymm == 202010)
+pred1_yes = filter(pred1, rs_prod_01==1)
+pred1_no = filter(pred1, rs_prod_01==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred1_yes$srno))[1]
+tp
+tp = tp/dim(test)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred1_no$srno))[1]
+fn
+fn = fn/dim(test)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred1_yes$srno))[1]
+fp
+fp = fp/dim(test)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred1_no$srno))[1]
+tn
+tn = tn/dim(test)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#2. XGBoost 調參版，根據參數組合決定要跑的時間，最後再來挑
+```{r}
+# 建立參數組合表
+paramTable = expand.grid(eta = c(0.05, 0.1),
+                         max_depth = c(6, 10),
+                         subsample = c(0.8),
+                         colsample_bytree=c(1))
+
+# 進行交叉驗證挑選最佳參數
+cvOutput = NULL
+
+for(iy in c(1:nrow(paramTable))){
+
+  print(paste0("第", iy, "組參數"))
+
+  params = list(booster = "gbtree",
+                eta = paramTable$eta[iy], #學習速率
+                max_depth = paramTable$max_depth[iy], #太深會造成過度擬合
+                subsample = paramTable$subsample[iy],
+                objective = "binary:logistic",
+                eval_metric = "error",
+                scale_pos_weight = 9) # 不平衡樣本時使用數字為 (y為0的數量/y為1的數量))
+
+  cvResult = xgb.cv(params = params, data = train_x, label = train_y, nrounds = 200, nfold = 5,
+                    early_stopping_rounds = 20, verbose = T)
+
+  cvOutput = cvOutput %>%
+    bind_rows(tibble(paramsNum = iy,
+                     bestIteration = cvResult$best_iteration,
+                     bestCvMeanError = cvResult$evaluation_log$train_error_mean[bestIteration],
+                     bestTestCvMeanError = cvResult$evaluation_log$test_error_mean[bestIteration]))
+  gc()
+}
+
+# 交叉驗證最佳參數
+bestCvSite = which(cvOutput$bestCvMeanError == min(cvOutput$bestCvMeanError))
+bestCvMeanError = cvOutput$bestCvMeanError[bestCvSite]
+bestIteration = cvOutput$bestIteration[bestCvSite]
+bestParamsNum = cvOutput$paramsNum[bestCvSite]
+
+# 最佳參數組合
+params = list(booster = "gbtree",
+              eta = paramTable$eta[bestParamsNum],
+              max_depth = paramTable$max_depth[bestParamsNum],
+              subsample = paramTable$subsample[bestParamsNum],
+              objective = "binary:logistic",
+              eval_metric = "error",
+              scale_pos_weight = 2)
+
+# xgboost模型訓練
+print(bestIteration)
+xgbModel = xgb.train(data = trainData,
+                      params = params,
+                      watchlist = watchlist,
+                      nrounds = bestIteration,
+                      maximize = F,
+                      verbose = T)
+
+```
+
+```{r}
+y_pred = predict(xgbModel, test_x)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred[i] > 0.16) {
+    y_pred[i] = 1
+  }
+  else{
+    y_pred[i] = 0
+  }
+}
+pred = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred
+)
+pred_yes = filter(pred, y_pred==1)
+pred_no = filter(pred, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+```
+
+
+# 助教code_ROC AUC _拿前面結果測試(還沒改)
+```{r}
+# library(tidyverse); library(data.table)
+#setwd('C:/Users/j9779/Desktop/Classfier_Performance')
+
+# # titanic dataset
+# train = fread('train.csv', stringsAsFactors=F)
+# test = fread('test.csv', stringsAsFactors=F)
+
+
+subset(train,select = c(rs_prod_01,aum02,aum03,aum05,bill_a2,bill_a3,bill_a4,bill_a5,pmt_a03,pmt_a06,pmt_a10,pmt_a19,dep_a2,dep_a3,dep_a4,dep_c3,dep_c4,CNT_Web_Login,FLG_INV_ADV,aum02_inc,aum03_inc,aum05_inc)) -> t1
+subset(test,select = c(rs_prod_01,aum02,aum03,aum05,bill_a2,bill_a3,bill_a4,bill_a5,pmt_a03,pmt_a06,pmt_a10,pmt_a19,dep_a2,dep_a3,dep_a4,dep_c3,dep_c4,CNT_Web_Login,FLG_INV_ADV,aum02_inc,aum03_inc,aum05_inc)) -> t2
+t1[is.na(t1)] <- 0
+t2[is.na(t2)] <- 0
+
+
+# # 前處理 =======================================================================
+# # select column
+# select_col = c('Survived', 'Pclass', 'Sex', 'Age', 'Fare', 'Embarked')
+# train = train %>% select(all_of(select_col))
+# # Fill NA
+# train$Age[is.na(train$Age)] = mean(train$Age, na.rm = T)
+# train = train %>% 
+#   mutate(Sex = as.factor(Sex),
+#          Embarked = as.factor(Embarked))
+# 
+# 
+# # Model Ranger =================================================================
+library(ranger)
+rf_model = ranger(rs_prod_01 ~ ., t1, probability = T)
+  
+hist(rf_model$predictions, xlab = "Predicted Probability")
+
+# Distribution of our discrete outcome
+prop.table(table(train$Survived))
+
+
+
+# Confusion matrices for cutoff=0.5 ============================================
+train_pred_prob = model$predictions[,2] %>% as.data.frame() %>% `colnames<-`('prob')
+train_pred_prob$act = train$rs_prod_01
+train_pred_prob$pred = ifelse(train_pred_prob$prob > 0.5, 1, 0)
+CMs = table(train$rs_prod_01, train_pred_prob$pred, dnn = c('Actual', 'Predict'))
+CMs
+
+
+
+# ROC AUC ======================================================================
+library("pROC")
+x_pred = predict(xgbModel3, test_x)
+y_train = data.frame(test_y)
+x_pred = data.frame(x_pred)
+rf_roc = roc(y_train$rs_prod_01, x_pred$x_pred)
+
+# ROC for 3 cutoffs
+plot.roc(rf_roc, print.thres = c(0.8, 0.2, 0.001), print.auc = T, xlim = c(1, 0))
+
+# Optimal threshold/cutoff based on Youden's Index 
+# 這裡在找最佳threshold/cutoff的時候是要用Train的，不是用Validation、Test!!!
+plot.roc(rf_roc, print.thres = "best", 
+         print.thres.best.method = "youden", 
+         print.auc = T,
+         print.thres.col = 'red',
+         legacy.axes=T) # x軸改成FPR
+
+```
+
+```{r}
+l240_grp1 = fread('l240_grp1.csv',header = T, stringsAsFactors = F, data.table = F) 
+l240_grp2 = fread('l240_grp2.csv',header = T, stringsAsFactors = F, data.table = F) 
+l240_grp3 = fread('l240_grp3.csv',header = T, stringsAsFactors = F, data.table = F)
+
+factor_name = c("income","age","gender","edu","mry", "job", "occp","Branch_Dist", "city", "FLG_WEB","YN_Web_Active","YN_SEC_ACC","YN_SAL","flg_house")
+
+factor_temp = as.data.frame(lapply(l240_grp1[,factor_name], as.factor))
+l240_grp1 = as.data.frame(lapply(l240_grp1[,!(colnames(l240_grp1) %in% factor_name)], as.numeric))
+
+factor_temp = as.data.frame(lapply(l240_grp2[,factor_name], as.factor))
+l240_grp2 = as.data.frame(lapply(l240_grp2[,!(colnames(l240_grp2) %in% factor_name)], as.numeric))
+
+factor_temp = as.data.frame(lapply(l240_grp3[,factor_name], as.factor))
+l240_grp3 = as.data.frame(lapply(l240_grp3[,!(colnames(l240_grp3) %in% factor_name)], as.numeric))
+```
+
+# l240_grp1
+```{r}
+
+train <- filter(l240_grp1, yyyymm!=202011)
+test <- filter(l240_grp1, yyyymm==202011)
+test1 = test
+trainData = train
+testData = test
+
+train_yes = filter(trainData, trainData$rs_prod_01==1)
+train_no = filter(trainData, trainData$rs_prod_01==0)
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+train_x = trainData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()               # 訓練集的特徵變數
+train_y = trainData %>% select(rs_prod_01)  %>% as.matrix()              # 訓練集的預測目標
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+
+# 將Train與Test轉為xgboost矩陣格式
+trainData = xgb.DMatrix(data =  train_x, label = train_y)   
+testData = xgb.DMatrix(data =  test_x, label = test_y)       
+
+watchlist = list(train = trainData, validation = testData)
+
+#1. XGBoost 固定參數版
+xgbModel_grp1 = xgb.train(data = trainData, 
+                     booster = "gbtree", 
+                     eta = 0.1, 
+                     max_depth = 8, 
+                     subsample = 0.8,
+                     eval_metric = "error",
+                     watchlist = watchlist,
+                     maximize = F,
+                     nrounds = 100,
+                     verbose = T, 
+                     objective = "binary:logistic")
+for(cutoff in c(1:30)){
+  y_pred = predict(xgbModel_grp1, test_x)
+  for (i in 1:dim(testData)[1]) {
+    if (y_pred[i] > 0.01*cutoff) {
+      y_pred[i] = 1
+    }
+    else{
+      y_pred[i] = 0
+    }
+  }
+  pred = data.frame(
+    srno = test["srno"],
+    y_pred = y_pred
+  )
+  pred_yes = filter(pred, y_pred==1)
+  pred_no = filter(pred, y_pred==0)
+  tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+  tp = tp/dim(testData)[1]
+  fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+  fn = fn/dim(testData)[1]
+  fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+  fp = fp/dim(testData)[1]
+  tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+  tn = tn/dim(testData)[1]
+  acc = tp+tn
+  preci = tp/(tp+fp)
+  reca = tp/(tp+fn)
+  f1 = 2/((1/preci)+(1/reca))
+  cat("f1 = ",f1," cutoff = ", 0.01*cutoff, "\n")
+}
+```
+
+```{r}
+y_pred1 = predict(xgbModel_grp1, test_x)
+pred1_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred1
+)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred1[i] > 0.12) {
+    y_pred1[i] = 1
+  }
+  else{
+    y_pred1[i] = 0
+  }
+}
+pred1 = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred1
+)
+pred_yes = filter(pred1, y_pred==1)
+pred_no = filter(pred1, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+
+#auc
+x_pred = predict(xgbModel_grp1, train_x)
+y_train = data.frame(train_y)
+x_pred = data.frame(x_pred)
+rf_roc = roc(y_train$rs_prod_01, x_pred$x_pred)
+
+# ROC for 3 cutoffs
+plot.roc(rf_roc, print.thres = c(0.8, 0.2, 0.001), print.auc = T, xlim = c(1, 0))
+
+# Optimal threshold/cutoff based on Youden's Index 
+# 這裡在找最佳threshold/cutoff的時候是要用Train的，不是用Validation、Test!!!
+plot.roc(rf_roc, print.thres = "best", 
+         print.thres.best.method = "youden", 
+         print.auc = T,
+         print.thres.col = 'red',
+         legacy.axes=T) # x軸改成FPR
+```
+
+
+# l240_grp2
+```{r}
+
+train <- filter(l240_grp2, yyyymm!=202011)
+test <- filter(l240_grp2, yyyymm==202011)
+test2 = test
+trainData = train
+testData = test
+
+train_yes = filter(trainData, trainData$rs_prod_01==1)
+train_no = filter(trainData, trainData$rs_prod_01==0)
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+train_x = trainData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()               # 訓練集的特徵變數
+train_y = trainData %>% select(rs_prod_01)  %>% as.matrix()              # 訓練集的預測目標
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+
+# 將Train與Test轉為xgboost矩陣格式
+trainData = xgb.DMatrix(data =  train_x, label = train_y)   
+testData = xgb.DMatrix(data =  test_x, label = test_y)       
+
+watchlist = list(train = trainData, validation = testData)
+
+#1. XGBoost 固定參數版
+xgbModel_grp2 = xgb.train(data = trainData, 
+                     booster = "gbtree", 
+                     eta = 0.1, 
+                     max_depth = 8, 
+                     subsample = 0.8,
+                     eval_metric = "error",
+                     watchlist = watchlist,
+                     maximize = F,
+                     nrounds = 100,
+                     verbose = T, 
+                     objective = "binary:logistic")
+for(cutoff in c(1:30)){
+  y_pred = predict(xgbModel_grp2, test_x)
+  for (i in 1:dim(testData)[1]) {
+    if (y_pred[i] > 0.01*cutoff) {
+      y_pred[i] = 1
+    }
+    else{
+      y_pred[i] = 0
+    }
+  }
+  pred = data.frame(
+    srno = test["srno"],
+    y_pred = y_pred
+  )
+  pred_yes = filter(pred, y_pred==1)
+  pred_no = filter(pred, y_pred==0)
+  tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+  tp = tp/dim(testData)[1]
+  fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+  fn = fn/dim(testData)[1]
+  fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+  fp = fp/dim(testData)[1]
+  tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+  tn = tn/dim(testData)[1]
+  acc = tp+tn
+  preci = tp/(tp+fp)
+  reca = tp/(tp+fn)
+  f1 = 2/((1/preci)+(1/reca))
+  cat("f1 = ",f1," cutoff = ", 0.01*cutoff, "\n")
+}
+```
+
+```{r}
+y_pred2 = predict(xgbModel_grp2, test_x)
+pred2_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred2
+)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred2[i] > 0.1) {
+    y_pred2[i] = 1
+  }
+  else{
+    y_pred2[i] = 0
+  }
+}
+pred2 = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred2
+)
+pred_yes = filter(pred2, y_pred==1)
+pred_no = filter(pred2, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+
+#auc
+x_pred = predict(xgbModel_grp2, train_x)
+y_train = data.frame(train_y)
+x_pred = data.frame(x_pred)
+rf_roc = roc(y_train$rs_prod_01, x_pred$x_pred)
+
+# ROC for 3 cutoffs
+plot.roc(rf_roc, print.thres = c(0.8, 0.2, 0.001), print.auc = T, xlim = c(1, 0))
+
+# Optimal threshold/cutoff based on Youden's Index 
+# 這裡在找最佳threshold/cutoff的時候是要用Train的，不是用Validation、Test!!!
+plot.roc(rf_roc, print.thres = "best", 
+         print.thres.best.method = "youden", 
+         print.auc = T,
+         print.thres.col = 'red',
+         legacy.axes=T) # x軸改成FPR
+```
+
+# l240_grp3
+```{r}
+
+train <- filter(l240_grp3, yyyymm!=202011)
+test <- filter(l240_grp3, yyyymm==202011)
+test3 = test
+trainData = train
+testData = test
+
+train_yes = filter(trainData, trainData$rs_prod_01==1)
+train_no = filter(trainData, trainData$rs_prod_01==0)
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+train_x = trainData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()               # 訓練集的特徵變數
+train_y = trainData %>% select(rs_prod_01)  %>% as.matrix()              # 訓練集的預測目標
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+
+# 將Train與Test轉為xgboost矩陣格式
+trainData = xgb.DMatrix(data =  train_x, label = train_y)   
+testData = xgb.DMatrix(data =  test_x, label = test_y)       
+
+watchlist = list(train = trainData, validation = testData)
+
+#1. XGBoost 固定參數版
+xgbModel_grp3 = xgb.train(data = trainData, 
+                     booster = "gbtree", 
+                     eta = 0.1, 
+                     max_depth = 8, 
+                     subsample = 0.8,
+                     eval_metric = "error",
+                     watchlist = watchlist,
+                     maximize = F,
+                     nrounds = 100,
+                     verbose = T, 
+                     objective = "binary:logistic")
+for(cutoff in c(1:30)){
+  y_pred = predict(xgbModel_grp3, test_x)
+  for (i in 1:dim(testData)[1]) {
+    if (y_pred[i] > 0.01*cutoff) {
+      y_pred[i] = 1
+    }
+    else{
+      y_pred[i] = 0
+    }
+  }
+  pred = data.frame(
+    srno = test["srno"],
+    y_pred = y_pred
+  )
+  pred_yes = filter(pred, y_pred==1)
+  pred_no = filter(pred, y_pred==0)
+  tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+  tp = tp/dim(testData)[1]
+  fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+  fn = fn/dim(testData)[1]
+  fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+  fp = fp/dim(testData)[1]
+  tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+  tn = tn/dim(testData)[1]
+  acc = tp+tn
+  preci = tp/(tp+fp)
+  reca = tp/(tp+fn)
+  f1 = 2/((1/preci)+(1/reca))
+  cat("f1 = ",f1," cutoff = ", 0.01*cutoff, "\n")
+}
+```
+
+```{r}
+y_pred3 = predict(xgbModel_grp3, test_x)
+pred3_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred3
+)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred3[i] > 0.12) {
+    y_pred3[i] = 1
+  }
+  else{
+    y_pred3[i] = 0
+  }
+}
+pred3 = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred3
+)
+pred_yes = filter(pred3, y_pred==1)
+pred_no = filter(pred3, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+
+#auc
+x_pred = predict(xgbModel_grp3, train_x)
+y_train = data.frame(train_y)
+x_pred = data.frame(x_pred)
+rf_roc = roc(y_train$rs_prod_01, x_pred$x_pred)
+
+# ROC for 3 cutoffs
+plot.roc(rf_roc, print.thres = c(0.8, 0.2, 0.001), print.auc = T, xlim = c(1, 0))
+
+# Optimal threshold/cutoff based on Youden's Index 
+# 這裡在找最佳threshold/cutoff的時候是要用Train的，不是用Validation、Test!!!
+plot.roc(rf_roc, print.thres = "best", 
+         print.thres.best.method = "youden", 
+         print.auc = T,
+         print.thres.col = 'red',
+         legacy.axes=T) # x軸改成FPR
+```
+
+#合併分群
+```{r}
+pred_ks = rbind(pred1_prob,pred2_prob)
+pred_ks = rbind(pred_ks,pred3_prob)
+model_ks = rbind(pred1,pred2)
+model_ks = rbind(model_ks,pred3)
+test_ks = rbind(test1,test2)
+test_ks = rbind(test_ks,test3)
+```
+
+```{r}
+test_yes = filter(test_ks, test_ks$rs_prod_01==1)
+test_no = filter(test_ks, test_ks$rs_prod_01==0)
+pred_yes = filter(model_ks, y_pred==1)
+pred_no = filter(model_ks, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(model_ks)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(model_ks)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(model_ks)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(model_ks)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+
+#auc
+rf_roc = roc(test_ks$rs_prod_01, pred_ks$y_pred)
+
+# ROC for 3 cutoffs
+plot.roc(rf_roc, print.thres = c(0.8, 0.2, 0.001), print.auc = T, xlim = c(1, 0))
+
+# Optimal threshold/cutoff based on Youden's Index 
+# 這裡在找最佳threshold/cutoff的時候是要用Train的，不是用Validation、Test!!!
+plot.roc(rf_roc, print.thres = "best", 
+         print.thres.best.method = "youden", 
+         print.auc = T,
+         print.thres.col = 'red',
+         legacy.axes=T) # x軸改成FPR
+```
+
+
+```{r}
+test_yes = filter(test_ks, test_ks$rs_prod_01==1)
+test_no = filter(test_ks, test_ks$rs_prod_01==0)
+
+for(cutoff in c(1:30)){
+  pred_ks_var = pred_ks$y_pred
+  for (i in 1:dim(pred_ks)[1]) {
+    if (pred_ks_var[i] > 0.01*cutoff) {
+      pred_ks_var[i] = 1
+    }
+    else{
+      pred_ks_var[i] = 0
+    }
+  }
+  pred = data.frame(
+    srno = test_ks["srno"],
+    y_pred = pred_ks_var
+  )
+  pred_yes = filter(pred, y_pred==1)
+  pred_no = filter(pred, y_pred==0)
+  tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+  tp = tp/dim(testData)[1]
+  fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+  fn = fn/dim(testData)[1]
+  fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+  fp = fp/dim(testData)[1]
+  tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+  tn = tn/dim(testData)[1]
+  acc = tp+tn
+  preci = tp/(tp+fp)
+  reca = tp/(tp+fn)
+  f1 = 2/((1/preci)+(1/reca))
+  cat("f1 = ",f1," cutoff = ", 0.01*cutoff, "\n")
+}
+```
+
+###保存訓練好的model
+```{r}
+xgb.save(xgbModel1,'xgbModel1.model')
+xgb.save(xgbModel2,'xgbModel2.model')
+xgb.save(xgbModel_grp1,'xgbModel_grp1.model')
+xgb.save(xgbModel_grp2,'xgbModel_grp2.model')
+xgb.save(xgbModel_grp3,'xgbModel_grp3.model')
+```
+
+###各群
+###忙猜1
+```{r}
+test <- filter(l240_grp1, yyyymm==202011)
+test_yes = filter(test, rs_prod_01==1)
+test_no = filter(test, test$rs_prod_01==0)
+pred1 <- filter(l240_grp1, yyyymm == 202010)
+pred1_yes = filter(pred1, rs_prod_01==1)
+pred1_no = filter(pred1, rs_prod_01==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred1_yes$srno))[1]
+tp
+tp = tp/dim(test)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred1_no$srno))[1]
+fn
+fn = fn/dim(test)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred1_yes$srno))[1]
+fp
+fp = fp/dim(test)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred1_no$srno))[1]
+tn
+tn = tn/dim(test)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+```
+
+###忙猜2
+```{r}
+test <- filter(l240_grp2, yyyymm==202011)
+test_yes = filter(test, rs_prod_01==1)
+test_no = filter(test, test$rs_prod_01==0)
+pred1 <- filter(l240_grp2, yyyymm == 202010)
+pred1_yes = filter(pred1, rs_prod_01==1)
+pred1_no = filter(pred1, rs_prod_01==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred1_yes$srno))[1]
+tp
+tp = tp/dim(test)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred1_no$srno))[1]
+fn
+fn = fn/dim(test)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred1_yes$srno))[1]
+fp
+fp = fp/dim(test)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred1_no$srno))[1]
+tn
+tn = tn/dim(test)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+```
+
+###忙猜3
+```{r}
+test <- filter(l240_grp3, yyyymm==202011)
+test_yes = filter(test, rs_prod_01==1)
+test_no = filter(test, test$rs_prod_01==0)
+pred1 <- filter(l240_grp3, yyyymm == 202010)
+pred1_yes = filter(pred1, rs_prod_01==1)
+pred1_no = filter(pred1, rs_prod_01==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred1_yes$srno))[1]
+tp
+tp = tp/dim(test)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred1_no$srno))[1]
+fn
+fn = fn/dim(test)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred1_yes$srno))[1]
+fp
+fp = fp/dim(test)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred1_no$srno))[1]
+tn
+tn = tn/dim(test)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+```
+
+###載入分群model
+```{r}
+xgbModel_grp1 = xgb.load('xgbModel_grp1.model')
+xgbModel_grp2 = xgb.load('xgbModel_grp2.model')
+xgbModel_grp3 = xgb.load('xgbModel_grp3.model')
+```
+
+###載入分群資料
+```{r}
+l240_grp1 = fread('l260_grp1.csv',header = T, stringsAsFactors = F, data.table = F) 
+l240_grp2 = fread('l260_grp2.csv',header = T, stringsAsFactors = F, data.table = F) 
+l240_grp3 = fread('l260_grp3.csv',header = T, stringsAsFactors = F, data.table = F)
+
+l240_grp1 = filter(l240_grp1, l240_grp1$age>=23)
+l240_grp1 = filter(l240_grp1, l240_grp1$income>=370000)
+l240_grp2 = filter(l240_grp2, l240_grp2$age>=23)
+l240_grp2 = filter(l240_grp2, l240_grp2$income>=370000)
+l240_grp3 = filter(l240_grp3, l240_grp3$age>=23)
+l240_grp3 = filter(l240_grp3, l240_grp3$income>=370000)
+
+factor_name = c("income","age","gender","edu","mry", "job", "occp","Branch_Dist", "city", "FLG_WEB","YN_Web_Active","YN_SEC_ACC","YN_SAL","flg_house")
+
+factor_temp = as.data.frame(lapply(l240_grp1[,factor_name], as.factor))
+l240_grp1 = as.data.frame(lapply(l240_grp1[,!(colnames(l240_grp1) %in% factor_name)], as.numeric))
+
+factor_temp = as.data.frame(lapply(l240_grp2[,factor_name], as.factor))
+l240_grp2 = as.data.frame(lapply(l240_grp2[,!(colnames(l240_grp2) %in% factor_name)], as.numeric))
+
+factor_temp = as.data.frame(lapply(l240_grp3[,factor_name], as.factor))
+l240_grp3 = as.data.frame(lapply(l240_grp3[,!(colnames(l240_grp3) %in% factor_name)], as.numeric))
+```
+
+###分群1預測
+```{r}
+test <- filter(l240_grp1, yyyymm==202011)
+test1 = test
+testData = test
+
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+y_pred1 = predict(xgbModel_grp1, test_x)
+pred1_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred1
+)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred1[i] > 0.12) {
+    y_pred1[i] = 1
+  }
+  else{
+    y_pred1[i] = 0
+  }
+}
+pred1 = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred1
+)
+pred_yes = filter(pred1, y_pred==1)
+pred_no = filter(pred1, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+```
+
+###分群2預測
+```{r}
+test <- filter(l240_grp2, yyyymm==202011)
+test2 = test
+testData = test
+
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+y_pred2 = predict(xgbModel_grp2, test_x)
+pred2_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred2
+)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred2[i] > 0.1) {
+    y_pred2[i] = 1
+  }
+  else{
+    y_pred2[i] = 0
+  }
+}
+pred2 = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred2
+)
+pred_yes = filter(pred2, y_pred==1)
+pred_no = filter(pred2, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+
+```
+
+
+###分群3預測
+```{r}
+test <- filter(l240_grp3, yyyymm==202011)
+test3 = test
+testData = test
+
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+y_pred3 = predict(xgbModel_grp3, test_x)
+pred3_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred3
+)
+for (i in 1:dim(testData)[1]) {
+  if (y_pred3[i] > 0.12) {
+    y_pred3[i] = 1
+  }
+  else{
+    y_pred3[i] = 0
+  }
+}
+pred3 = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred3
+)
+pred_yes = filter(pred3, y_pred==1)
+pred_no = filter(pred3, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(testData)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(testData)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(testData)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(testData)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+#import <- xgb.importance(colnames(trainData$data), model = model)
+#xgb.ggplot.importance(import[1:30], rel_to_first = TRUE)
+
+```
+
+###合併分群
+```{r}
+pred_ks = rbind(pred1_prob,pred2_prob)
+pred_ks = rbind(pred_ks,pred3_prob)
+model_ks = rbind(pred1,pred2)
+model_ks = rbind(model_ks,pred3)
+test_ks = rbind(test1,test2)
+test_ks = rbind(test_ks,test3)
+```
+
+```{r}
+test_yes = filter(test_ks, test_ks$rs_prod_01==1)
+test_no = filter(test_ks, test_ks$rs_prod_01==0)
+pred_yes = filter(model_ks, y_pred==1)
+pred_no = filter(model_ks, y_pred==0)
+tp = dim(filter(test_yes, test_yes$srno %in% pred_yes$srno))[1]
+tp
+tp = tp/dim(model_ks)[1]
+tp
+fn = dim(filter(test_yes, test_yes$srno %in% pred_no$srno))[1]
+fn
+fn = fn/dim(model_ks)[1]
+fn
+fp = dim(filter(test_no, test_no$srno %in% pred_yes$srno))[1]
+fp
+fp = fp/dim(model_ks)[1]
+fp
+tn = dim(filter(test_no, test_no$srno %in% pred_no$srno))[1]
+tn
+tn = tn/dim(model_ks)[1]
+tn
+acc = tp+tn
+acc
+preci = tp/(tp+fp)
+preci
+reca = tp/(tp+fn)
+reca
+f1 = 2/((1/preci)+(1/reca))
+f1
+
+#auc
+rf_roc = roc(test_ks$rs_prod_01, pred_ks$y_pred)
+
+# ROC for 3 cutoffs
+plot.roc(rf_roc, print.thres = c(0.8, 0.2, 0.001), print.auc = T, xlim = c(1, 0))
+
+# Optimal threshold/cutoff based on Youden's Index 
+# 這裡在找最佳threshold/cutoff的時候是要用Train的，不是用Validation、Test!!!
+plot.roc(rf_roc, print.thres = "best", 
+         print.thres.best.method = "youden", 
+         print.auc = T,
+         print.thres.col = 'red',
+         legacy.axes=T) # x軸改成FPR
+```
+
+
+###匯出csv
+```{r}
+write.csv(model_ks,file="predict.csv",row.names = FALSE)
+```
+
+
+#############預測12月
+###載入分群model
+```{r}
+xgbModel_grp1 = xgb.load('xgbModel_grp1.model')
+xgbModel_grp2 = xgb.load('xgbModel_grp2.model')
+xgbModel_grp3 = xgb.load('xgbModel_grp3.model')
+```
+
+###載入分群資料
+```{r}
+l240_grp1 = fread('l260_grp1.csv',header = T, stringsAsFactors = F, data.table = F) 
+l240_grp2 = fread('l260_grp2.csv',header = T, stringsAsFactors = F, data.table = F) 
+l240_grp3 = fread('l260_grp3.csv',header = T, stringsAsFactors = F, data.table = F)
+
+factor_name = c("income","age","gender","edu","mry", "job", "occp","Branch_Dist", "city", "FLG_WEB","YN_Web_Active","YN_SEC_ACC","YN_SAL","flg_house")
+
+factor_temp = as.data.frame(lapply(l240_grp1[,factor_name], as.factor))
+l240_grp1 = as.data.frame(lapply(l240_grp1[,!(colnames(l240_grp1) %in% factor_name)], as.numeric))
+
+factor_temp = as.data.frame(lapply(l240_grp2[,factor_name], as.factor))
+l240_grp2 = as.data.frame(lapply(l240_grp2[,!(colnames(l240_grp2) %in% factor_name)], as.numeric))
+
+factor_temp = as.data.frame(lapply(l240_grp3[,factor_name], as.factor))
+l240_grp3 = as.data.frame(lapply(l240_grp3[,!(colnames(l240_grp3) %in% factor_name)], as.numeric))
+```
+###分群1預測
+```{r}
+test <- filter(l240_grp1, l240_grp1$yyyymm==202012)
+test1 = test
+testData = test
+
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+y_pred1 = predict(xgbModel_grp1, test_x)
+pred1_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred1
+)
+num = 0
+for (i in 1:dim(testData)[1]) {
+  if (y_pred1[i] > 0.00051) {
+    y_pred1[i] = 1
+    num = num + 1
+  }
+  else{
+    y_pred1[i] = 0
+  }
+}
+pred1 = data.frame(
+  srno = test["srno"],
+  pred_prod_1 = y_pred1
+)
+num
+write.csv(pred1,file="predict_1.csv",row.names = FALSE)
+```
+
+###分群2預測
+```{r}
+test <- filter(l240_grp2, yyyymm==202012)
+test2 = test
+testData = test
+
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+y_pred2 = predict(xgbModel_grp2, test_x)
+pred2_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred2
+)
+num = 0
+for (i in 1:dim(testData)[1]) {
+  if (y_pred2[i] > 0.0019) {
+    y_pred2[i] = 1
+    num = num + 1
+  }
+  else{
+    y_pred2[i] = 0
+  }
+}
+pred2 = data.frame(
+  srno = test["srno"],
+  pred_prod_1 = y_pred2
+)
+num
+write.csv(pred2,file="predict_2.csv",row.names = FALSE)
+```
+
+
+###分群3預測
+```{r}
+test <- filter(l240_grp3, yyyymm==202012)
+test3 = test
+testData = test
+
+test_yes = filter(test, testData$rs_prod_01==1)
+test_no = filter(test, testData$rs_prod_01==0)
+test_x = testData %>% select(-rs_prod_01,-srno,-yyyymm) %>% as.matrix()                          # 測試集的特徵變數
+test_y = testData %>% select(rs_prod_01)  %>% as.matrix()                          # 測試集的預測目標
+y_pred3 = predict(xgbModel_grp3, test_x)
+pred3_prob = data.frame(
+  srno = test["srno"],
+  y_pred = y_pred3
+)
+num = 0
+for (i in 1:dim(testData)[1]) {
+  if (y_pred3[i] > 0.12) {
+    y_pred3[i] = 1
+    num = num + 1
+  }
+  else{
+    y_pred3[i] = 0
+  }
+}
+pred3 = data.frame(
+  srno = test["srno"],
+  pred_prod_1 = y_pred3
+)
+num
+write.csv(pred3,file="predict_3.csv",row.names = FALSE)
+```
+
+###合併分群
+```{r}
+pred_ks = rbind(pred1_prob,pred2_prob)
+pred_ks = rbind(pred_ks,pred3_prob)
+model_ks = rbind(pred1,pred2)
+model_ks = rbind(model_ks,pred3)
+write.csv(model_ks,file="predict_all.csv",row.names = FALSE)
+test_ks = rbind(test1,test2)
+test_ks = rbind(test_ks,test3)
+```
+
+
+
+```{r}
+result1 = data.frame(
+  num = c("b_pre", "c_rec", "d_f1", "b_pre", "c_rec", "d_f1", "b_pre", "c_rec", "d_f1"),
+  mod = c("1","1","1","2","2","2","3","3","3"),
+  res = c(0.2846, 0.2515, 0.2671, 0.2007, 0.3301, 0.2497, 0.2865, 0.3207, 0.3026)
+)
+ggplot(result1,aes(x = num,y = res, fill=mod))+
+  geom_bar(stat = 'identity',position="dodge")
+```
+
+```{r}
+result2 = data.frame(
+  num = c("b_pre", "c_rec", "d_f1", "b_pre", "c_rec", "d_f1", "b_pre", "c_rec", "d_f1", "b_pre", "c_rec", "d_f1"),
+  mod = c("1","1","1","2","2","2","3","3","3","4","4","4"),
+  res = c(0.2846, 0.2515, 0.2671, 0.2007, 0.3301, 0.2497, 0.2865, 0.3207, 0.3026, 0.3042, 0.3396, 0.3209)
+)
+ggplot(result2,aes(x = num,y = res, fill=mod))+
+  geom_bar(stat = 'identity',position="dodge")
+```
